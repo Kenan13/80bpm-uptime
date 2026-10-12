@@ -5,7 +5,7 @@ Prüft alle 5 Minuten von außen (GitHub Actions) die Health-Endpunkte von Admin
 ## Einrichtung
 
 1. Öffentliches Repo anlegen, diese Dateien hineinlegen (`.github/workflows/uptime.yml`, `README.md`).
-2. Microsoft 365: eigene App „80BPM Monitoring“ mit Senderecht **nur** für `info@your80bpm.com` (Entra-App-Registrierung ohne API-Berechtigung, Einschränkung per Exchange RBAC for Applications). Schritt-für-Schritt-Anleitung für Lena: Claude Doc „80BPM Monitoring: Mailversand über info@ einrichten“.
+2. Microsoft 365: eigene App „80BPM Monitoring“ mit Senderecht **nur** für ein von Lena gewähltes Absenderpostfach (Entra-App-Registrierung ohne API-Berechtigung, Einschränkung per Exchange RBAC for Applications). Diese Adresse kommt in `MONITOR_MAIL_FROM`. Anleitung für Lena: Claude Doc „80BPM Monitoring: Mailversand einrichten“.
 3. Im Repo unter Settings → Secrets and variables → Actions anlegen:
    - `MONITOR_TENANT_ID`, `MONITOR_CLIENT_ID`, `MONITOR_CLIENT_SECRET`
    - `MONITOR_MAIL_FROM` (Absender-Postfach)
