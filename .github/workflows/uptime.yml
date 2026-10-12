@@ -1,0 +1,129 @@
+name: Verfügbarkeit 80BPM
+
+# Ruft alle 5 Minuten die Health-Endpunkte ab. Fällt ein Dienst bei zwei Versuchen
+# (30 s Abstand) aus, geht eine Alarm-Mail raus, bei Rückkehr eine Entwarnung.
+# Der letzte Zustand wird im Actions-Cache gehalten, damit nicht jede Runde mailt.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+    - cron: "17 3 1 * *" # monatlich: Lebenszeichen, sonst pausiert GitHub den Zeitplan nach 60 Tagen
+  workflow_dispatch:
+    inputs:
+      testmail:
+        description: "Testmail an alle Empfänger schicken"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+env:
+  URLS: >-
+    https://admin.your80bpm.com/health
+    https://portal.your80bpm.com/health
+    https://fragebogen.your80bpm.com/api/health
+
+jobs:
+  pruefen:
+    if: github.event.schedule != '17 3 1 * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Letzten Zustand laden
+        uses: actions/cache/restore@v4
+        with:
+          path: zustand.txt
+          key: zustand-${{ github.run_id }}
+          restore-keys: zustand-
+
+      - name: Endpunkte prüfen
+        id: pruefung
+        run: |
+          ausfall=""
+          for url in $URLS; do
+            ok=""
+            for versuch in 1 2; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url" || true)
+              if [ "$code" = "200" ]; then ok=1; break; fi
+              [ "$versuch" = 1 ] && sleep 30
+            done
+            if [ -z "$ok" ]; then ausfall="$ausfall $url (HTTP $code)"; fi
+            echo "$url -> ${code}"
+          done
+          vorher=$(cat zustand.txt 2>/dev/null || echo "ok")
+          if [ -n "$ausfall" ]; then jetzt="ausfall"; else jetzt="ok"; fi
+          echo "$jetzt" > zustand.txt
+          echo "vorher=$vorher" >> "$GITHUB_OUTPUT"
+          echo "jetzt=$jetzt" >> "$GITHUB_OUTPUT"
+          echo "ausfall=$ausfall" >> "$GITHUB_OUTPUT"
+          echo "Zustand: vorher $vorher, jetzt $jetzt"
+
+      - name: Zustand speichern
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: zustand.txt
+          key: zustand-${{ github.run_id }}
+
+      - name: Mail senden
+        if: >-
+          (steps.pruefung.outputs.jetzt != steps.pruefung.outputs.vorher) ||
+          (github.event_name == 'workflow_dispatch' && inputs.testmail)
+        env:
+          TENANT: ${{ secrets.MONITOR_TENANT_ID }}
+          CLIENT_ID: ${{ secrets.MONITOR_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.MONITOR_CLIENT_SECRET }}
+          ABSENDER: ${{ secrets.MONITOR_MAIL_FROM }}
+          EMPFAENGER: ${{ secrets.MONITOR_MAIL_TO }} # Kommagetrennt
+          JETZT: ${{ steps.pruefung.outputs.jetzt }}
+          AUSFALL: ${{ steps.pruefung.outputs.ausfall }}
+          TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.testmail }}
+        run: |
+          zeit=$(TZ=Europe/Berlin date '+%d.%m.%Y %H:%M')
+          if [ "$TEST" = "true" ]; then
+            betreff="[80BPM] Testmail Monitoring"
+            text="Testmail vom Verfügbarkeits-Monitoring ($zeit). Aktueller Zustand: $JETZT. Keine Aktion nötig."
+          elif [ "$JETZT" = "ausfall" ]; then
+            betreff="[80BPM] Plattform nicht erreichbar"
+            text="Seit etwa $zeit sind nicht erreichbar:$AUSFALL
+
+          Wahrscheinlichste Ursache: Der Server wurde neu gestartet und wartet auf das Entsperren.
+          1. Terminal öffnen: ssh -i ~/.ssh/id_ed25519_80bpm_entsperren entsperren@217.160.49.53
+          2. Passphrase aus dem Passwortmanager-Eintrag \"80BPM Server LUKS\" einfügen, Enter.
+          3. Nach etwa zwei Minuten kommt die Entwarnung per Mail.
+
+          Klappt das nicht oder kommt keine Passphrase-Abfrage: Kenan anrufen."
+          else
+            betreff="[80BPM] Plattform wieder erreichbar"
+            text="Seit etwa $zeit sind Admin, Portal und Fragebogen wieder erreichbar. Keine Aktion nötig."
+          fi
+
+          token=$(curl -sf -X POST "https://login.microsoftonline.com/$TENANT/oauth2/v2.0/token" \
+            -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" \
+            -d "scope=https://graph.microsoft.com/.default" -d "grant_type=client_credentials" | jq -r .access_token)
+
+          empfaenger=$(echo "$EMPFAENGER" | jq -R 'split(",") | map({emailAddress: {address: (. | gsub("^\\s+|\\s+$"; ""))}})')
+          jq -n --arg s "$betreff" --arg t "$text" --argjson to "$empfaenger" \
+            '{message: {subject: $s, body: {contentType: "Text", content: $t}, toRecipients: $to}, saveToSentItems: false}' > mail.json
+
+          curl -sf -X POST "https://graph.microsoft.com/v1.0/users/$ABSENDER/sendMail" \
+            -H "Authorization: Bearer $token" -H "Content-Type: application/json" --data @mail.json
+          echo "Mail verschickt: $betreff"
+
+  lebenszeichen:
+    if: github.event.schedule == '17 3 1 * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          date -u +%FT%TZ > lebenszeichen.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lebenszeichen.txt
+          git commit -m "Lebenszeichen für den Zeitplan"
+          git push
